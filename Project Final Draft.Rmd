@@ -1,0 +1,336 @@
+---
+title: "STA 207 Project Final Draft"
+author: "Kevin Su"
+date: "3/14/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(gplots)
+library(dplyr)
+library(MASS)
+library(scales)
+```
+
+```{r, echo = F}
+#reading in data, formatting WHO covid
+
+UNHDI <- read.table("C:/Users/kevin/Documents/UC Davis Winter 2022 Homework/STA 207/Project Proposal/UN HDI 2018.csv", header = T, fill = T, sep = ",") #UN Human Development Index, changed to 2018
+
+WPF.index <- read.table("C:/Users/kevin/Documents/UC Davis Winter 2022 Homework/STA 207/Project Proposal/index_2021_pour_import_-_index_2020_-_pour_import_1_1_-_index_2020_-_pour_import_1_1.csv", header = T, fill = T, sep = ",") #manually translated/formatted, now working
+
+who.covid <- read.csv("https://covid19.who.int/WHO-COVID-19-global-data.csv")
+
+urban.pop <- read.csv("C:/Users/kevin/Documents/UC Davis Winter 2022 Homework/STA 207/Project Proposal/CIA World Factbook Urban pop.csv") #changed from UN Data since UN data was poorly structured, had to manually assemble this dataset
+
+#Also important for covariates is the proportion of people living in an urban environment, constructed from the 2022 CIA World Factbook. This is relevant as more densely populated areas could provide more opportunity for disease spread. Removed though due to violation of ANCOVA assumption.
+
+total.pop <- read.csv("C:/Users/kevin/Documents/UC Davis Winter 2022 Homework/STA 207/Project Draft/World Populations 2020.csv", header = T) 
+#Total Population Data from World Bank, manually formatted in Excel to make country names consistent https://data.worldbank.org/indicator/SP.POP.TOTL
+
+deaths.covid <-  who.covid %>% group_by(Country) %>% summarize(Cumulative_deaths = max(Cumulative_deaths)) #retrieve cumulative deaths
+
+colnames(total.pop) <- c("Country", "Population")
+deaths.covid <- as.data.frame(deaths.covid)
+
+```
+
+
+```{r, echo = F} 
+#Adjust names of countries for consistency
+
+
+deaths.covid[deaths.covid$Country=="Bolivia (Plurinational State of)", 1] = "Bolivia"
+deaths.covid[deaths.covid$Country=="Brunei Darussalam", 1] = "Brunei"
+deaths.covid[deaths.covid$Country=="CÃ´te dâ€™Ivoire", 1] = "Ivory Coast"
+deaths.covid[deaths.covid$Country=="CuraÃ§ao", 1] = "Curacao"
+deaths.covid[deaths.covid$Country=="Democratic People's Republic of Korea", 1] = "Democratic Peoples Republic of Korea"
+deaths.covid[deaths.covid$Country=="Democratic Republic of the Congo", 1] = "DR Congo"
+deaths.covid[deaths.covid$Country=="Falkland Islands (Malvinas)", 1] = "Falkland Islands"
+deaths.covid[deaths.covid$Country=="Iran (Islamic Republic of)", 1] = "Iran"
+deaths.covid[deaths.covid$Country=="Lao People's Democratic Republic", 1] = "Laos"
+deaths.covid[deaths.covid$Country=="Micronesia (Federated States of)", 1] = "Federated States of Micronesia"
+deaths.covid[deaths.covid$Country=="Northern Mariana Islands (Commonwealth of the)", 1] = "Northern Mariana Islands"
+deaths.covid[deaths.covid$Country=="occupied Palestinian territory, including east Jerusalem", 1] = "Palestine"
+deaths.covid[deaths.covid$Country=="RÃ©union", 1] = "Reunion"
+deaths.covid[deaths.covid$Country=="Republic of Korea", 1] = "South Korea"
+deaths.covid[deaths.covid$Country=="Republic of Moldova", 1] = "Moldova"
+deaths.covid[deaths.covid$Country=="Saint BarthÃ©lemy", 1] = "Saint Bartholomew"
+deaths.covid[deaths.covid$Country=="The United Kingdom", 1] = "United Kingdom"
+deaths.covid[deaths.covid$Country=="United States of America", 1] = "United States"
+deaths.covid[deaths.covid$Country=="United Republic of Tanzania", 1] = "Tanzania"
+deaths.covid[deaths.covid$Country=="Viet Nam", 1] = "Vietnam"
+deaths.covid[deaths.covid$Country=="Venezuela (Bolivarian Republic of)", 1] = "Venezuela"
+deaths.covid[deaths.covid$Country=="Kosovo[1]", 1] = "Kosovo"
+
+```
+
+```{r, echo = F}
+collate <- full_join(deaths.covid, total.pop, by = "Country")
+collate <- full_join(collate, UNHDI, by = "Country")
+collate <- full_join(collate, urban.pop, by = "Country")
+collate <- full_join(collate, WPF.index, by = "Country")
+
+collate$deaths.per1000 <- (collate$Cumulative_deaths + 0.0001) *1000/collate$Population #0.0001 added to death count to permit box-cox transformation later without meaningfully affecting data
+collate$HDI_Category <- ifelse(collate$X2018.HDI.Value >= .8, "Very High", ifelse(collate$X2018.HDI.Value>=.7, "High", ifelse(collate$X2018.HDI.Value>=.55, "Medium", "Low")))
+#collate$HDI_Category <- factor(collate$HDI_Category, order = TRUE, levels = c("Low", "Medium", "High", "Very High"))
+
+collate$WPF_Category <- ifelse(collate$Score.2020 <= 15, "Good", ifelse(collate$Score.2020 <= 25, "Satisfactory", ifelse(collate$Score.2020 <= 35, "Problematic", ifelse(collate$Score.2020 <= 55, "Difficult", "Very Serious"))))
+#collate$WPF_Category <- factor(collate$WPF_Category, order = T, levels = c("Very Serious", "Difficult", "Problematic", "Satisfactory", "Good"))
+
+collate <- collate[complete.cases(collate),]
+```
+
+# Background
+
+The Coronavirus pandemic of the previous two years has wreaked havoc among the world economy and interfered with the lives of nearly everyone around the globe, whether it be through suffering from the actual virus, or from public health restrictions on travel and contact with others. As of February 2022, it has been confirmed to have claimed the lives of nearly 6 million people across the world and sparked much discussion about the balance between how public measures in both media messaging in public health measures to curb the severity of the impact of a deadly virus and the impact of the deadly virus itself affects our daily lives, and whether a more heavy-handed approach is warranted when dealing with such a virus. We seek to answer the question: Does there exist a relationship between a country's number of reported deaths from COVID-19 and the presence of restrictions in media and journalism?
+
+# Dataset
+
+We begin with the base World Health Organization (WHO) covid dataset, which consists of daily and cumulative numbers of both covid cases and deaths dating back to April of 2020. Our responding variable in question will be "cumulative deaths" retrieved as recently as possible (as of this, March 4, 2022) as deaths are a much more easily defined characteristic, and asymptomatic cases and failure to diagnose are likely more common than misclassified deaths. Here, cumulative deaths will be measured on a proportional basis to each country's population with population data sourced from the World Bank.
+
+One covariate we could also consider is proportion of population within each country that lives in an urban environment. This is provided by the CIA World Factbook. Urbanization contributes to higher population density, so people may be exposed to the virus more often in urbanized environments. However, this could have too strong of correlation with our following effect to be included in our model due to income effects, so we will investigate further.
+
+Additionally, we also consider the Human Development Index (HDI) as one of our main effects. HDI through life expectancy estimations, education, and income could serve as reasonable proxies of urbanization due to potentially high correlation and also indirectly accounts for access to medical care, which could include vaccinations, testing. Also, importantly, despite high HDI countries having better access to high-quality medical care, they also have a larger elderly population due to the inclusion of life expectancy as a component of the index, and the strong correlation between age and risk of death due to COVID-19 is very widely known. The UN suggests that Human Development Index can be broken down into four bins - "Low", "Medium", "High", and "Very High" with the thresholds starting at at least .8, .7, and .55, for "Very High", "High", and "Medium", respectively.
+
+Our primary main effect that we are investigating is the  World Press Freedom Index (WPF), published by Reporters Sans Frontiers (RSF) which is an international organization for the advocacy of freedom of press. Despite this organization's stated mission, our goal is NOT to evaluate whether or not the true covid deaths in countries with more open media access are better or worse, just whether or not the published death counts are actually different. The RSF also bins countries with WPF indicators into "Good", "Satisfactory", "Problematic", "Difficult", and "Very Serious" for those with indicators under 15, 25, 35, 55, and above 55, respectively, wich lower numbers indicating greater freedom of information and safe environments for independent media.
+
+When taking the figures from these sources, we have 170 complete cases of countries with data in these variables.
+
+# Exploratory Data Analysis
+
+We begin our exploratory data analysis with investigating our responding variable: cumulative confirmed COVID-19 deaths as a proportion of population. It is immediately apparent that this figure is not normally distributed.
+
+```{r, echo = F}
+summary(collate$deaths.per1000)
+hist(collate$deaths.per1000, main = "Frequency of COVID-19 deaths per 1000 people by number of countries", xlab = "COVID-19 deaths (per 1000)")
+```
+
+As such, we perform a Box-Cox transformation on the proportion of covid-19 deaths and find $\lambda = 0.263$. As such, further analysis will yield $\frac{Y^{0.263} - 1}{0.263}$ instead as the model output in order to satisfy the model assumptions, though the remaining plots here will show the untransformed death rate.
+
+```{r, echo = F}
+
+
+fit <- aov(collate$deaths.per1000~collate$WPF_Category + collate$HDI_Category + collate$WPF_Category*collate$HDI_Category)
+bc.deaths <- boxcox(fit)
+lambda <- bc.deaths$x[which.max(bc.deaths$y)]
+
+
+
+```
+
+
+```{r, echo = F}
+
+ggplot(collate, aes(x = WPF_Category)) + geom_bar() + scale_x_discrete(labels = c("Very Serious (55+)", "Difficult (35-55)", "Problematic (25-35)", "Satisfactory (15-25)", "Good (15-)"), limits = c("Very Serious", "Difficult", "Problematic", "Satisfactory", "Good")) + labs(title = "# of Countries within each World Press Freedom Indicator Bracket") + ylab("Number of Countries") + xlab("World Press Freedom Bracket")
+```
+
+Here we can see the number of countries falling within each WPF indicator bracket. Around half of countries fall within either "Difficult" or "Problematic" environments for journalists.
+
+```{r, echo = F}
+
+ggplot(collate, aes(x = HDI_Category)) + geom_bar() + scale_x_discrete(labels = c("Low (<.55)", "Medium (.55-.7)", "High (.7-.8)", "Very High (.8-1)"), limits = c("Low", "Medium", "High", "Very High")) + labs(title = "# of Countries within each Human Development Index Bracket") + ylab("Number of Countries") + xlab("Human Development Index")
+
+```
+
+We can also see here that a slim majority of countries are considered to have "High" or "Very High" human development indices.
+
+We also consider as a covariate the proportion of people living in an urban environment, constructed from the 2022 CIA World Factbook. This could be relevant as more densely populated areas could provide more opportunity for disease spread. However, due to high correlation between proportion of urban population and the two main effects, we will not further investigate the effects of this variable on deaths per capita as it can be adequately covered by our main effects, and we recognize that it may be an intermediate confounder. We will not include this measure in our final model as it would violate the assumption in ANCOVA that the covariate is independent of the main effects. As such, for our main model we will proceed with a Two-Way ANOVA model, to be described later.
+
+```{r, echo = F}
+summary(lm(collate$Urban~collate$HDI_Category+collate$WPF_Category))
+```
+
+We can also see the distribution of these two main effects in tandem through a pairwise scatter plot. Here we see there seems to visually be some weak correlation between HDI and Press Freedom/WFP index. Note the inverted scale on the WPF score, with lower values indicating fewer restrictions on freedom of information and freedom of the press.
+
+```{r, echo = F}
+ggplot(collate, aes(x = X2018.HDI.Value, y = Score.2020, col = deaths.per1000)) + geom_point() + scale_colour_gradient(low = "#AFE3FF",  high = "#030102", name = "COVID-19 Deaths (per 1000)") + scale_y_reverse() + ggtitle("HDI vs. World Press Freedom Index") + xlab("Human Development Index 2018") + ylab("WPF Index 2020 (Inverted scale)") 
+
+
+collate$deaths.per1000 <- ((collate$deaths.per1000^lambda)-1)/lambda #implement box-cox transformation from earlier
+```
+
+
+
+# Question of Interest/Datasets
+
+Our primary question is to ask whether journalistic access has any effect on reported death numbers. Countries that more tightly restrict their media environment may also be more likely to downplay their posted figures in order to try to maintain a sense of calm over the populace. On the other hand, countries with the ability to restrict the flow of information in such a heavy-handed manner may also be more willing to expend the resources to enact a more restrictive set of policies to effectively curb the spread of the virus. As such, our primary covariate of investigation is the World Press Freedom Index, published by Reporters Sans Frontiers (RSF) which is an international organization for the advocacy of freedom of press. Despite this organization's stated mission, our goal is NOT to evaluate whether or not the true covid deaths in countries with more open media access are better or worse, just whether or not the published death counts differ between countries with varying degrees of restrictions on flow of information. 
+
+
+# Model
+
+Our model is an imbalanced two-way ANOVA design with interaction. We believe such a model is appropriate as we can also later test for the presence of the new covariate of press-freedom as the full model and the reduced model being a model that includes the other main effect but not press-freedom and its interactions. Furthermore an ANCOVA (Analysis of Covariance) model would be inappropriate due to high collinearity between the main effects and previously proposed covariate of urban population percentage.
+
+Our proposed model is: 
+
+$Y_{ijk} = \mu_{..} + \alpha_i + \beta_j + (\alpha\beta)_{ij} + \epsilon_{ijk}, k = 1,...,n_{ij}, j = 1,2,3,4,5, i = 1,2,3,4$ 
+
+where $\epsilon_{ijk}$ are independent and identically distributed with mean 0. Here $\mu_{..}$ is the arithmetic average of all countries' COVID-19 death rates (NOT the global COVID death rate) and $\alpha_i$ is the relative difference between the arithmetic average of all countries COVID death rates within the same UN HDI bracket and $\mu_{..}$, and $\beta_j$ is the relative difference between the arithmetic average of all countries covid death rates within the same WPF index bracket and $\mu_{..}$. $(\alpha\beta)_{ij}$ is the relative difference between the arithmetic average of all countries COVID death rates within both the same WPF index bracket and UN HDI bracket and $\mu_{..} + \alpha_i + \beta_j = \mu_{ij} - \mu_{i.} - \mu_{.j} + \mu_{..}$.
+
+
+
+We would then have $H_0: \beta_j$ and $(\alpha\beta)_{ij} = 0$. against $H_1:$ At least one of $\beta_j$ or $(\alpha\beta)_{ij} \neq 0$.
+
+We would test this by a partial F-test where
+
+$F^*: \frac{SSE_{reduced} - SSE_{full}}{df_{reduced} - df_{full}} / \frac{SSE_{full}}{df_{full}}$
+
+and $F^* \sim F(df_{reduced} - df_{full}, df_{full})$ under the null hypothesis.
+
+```{r, echo = F}
+model.full <- lm(collate$deaths.per1000~collate$HDI_Category + collate$WPF_Category + collate$HDI_Category*collate$WPF_Category)
+model.reduced <- lm(collate$deaths.per1000~collate$HDI_Category)
+
+anova(model.reduced, model.full)
+#qf(1-.05, 14, 152)
+```
+Here we can reject $H_0$ at the $\alpha = 0.05$ level as $F^* = \frac{40.06/14}{150.03/152} = 2.8995 > F_{(1-\alpha = .95, ndf = 14, ddf = 152)} = 1.757$ and the coefficients relating to WPF are likely relevant to the per-capita death rate.
+
+```{r, echo = F}
+summary(model.full)
+```
+
+Additionally, we can verify that countries with lower HDI tend to have fewer deaths due to COVID-19, possibly due to the limited presence of an elderly population.
+
+#Model Diagnostics
+
+```{r, echo = F}
+par(mfrow = c(2,2))
+plot(model.full)
+
+shapiro.test(model.full$residuals)
+```
+
+From the model diagnostics plots of the full model, we can see that there may be a slight problem with heteroscedasticity with a larger spread in variance close to the center of the distribution, though this does not appear serious. Similarly, the residuals may have a slight left skew, and a subsequent Shapiro-Wilk test also further affirms our suspicions in this regard, and the assumption of normality of residuals may have been violated.
+
+# Conclusions
+
+From our analysis we find that the coefficients involving the World Press Freedom index may be relevant towards predicting the cumulative COVID-19 death count of a given country relative to a model that includes just the UN Human Development Index. However, there are some caveats to this analysis. First of all, the model seems to have a violation in one of its assumptions as its residuals appear to have a weak but noticeable left skew. Second of all, it is difficult to draw causal inference conclusions from this analysis. It should be plainly obvious that the freedom of information and freedom of press have no direct effect on any biological mechanism of action. That leaves two possibilities: It could be possible that those that are more willing and have the resources to restrict the flow of information within their country also have the capital to be able to enact stricter public health regulations to curb the spread of the virus, or there is misreporting of the death count among these countries and such misreporting is a symptom of the restrictions on the flow of information. Neither explanation gives a satisfying causal inference conclusion as the first explanation involves a separate variable that is not easy to quantify and the second explanation is unverifiable by the very nature of the problem. However, it may still be worth it to look at death rates of countries with varying press freedom indicators in a different light.
+
+
+# Code Appendix
+```{r, eval = F, echo = T}
+#Loading Packages
+library(ggplot2)
+library(gplots)
+library(dplyr)
+library(MASS)
+library(scales)
+
+#Data Cleaning (partial, primarily for WHO data, some data was cleaned externally in excel or manually copied from pdf format)
+
+UNHDI <- read.table("C:/Users/kevin/Documents/UC Davis Winter 2022 Homework/STA 207/Project Proposal/UN HDI 2018.csv", header = T, fill = T, sep = ",") #UN Human Development Index, changed to 2018
+
+WPF.index <- read.table("C:/Users/kevin/Documents/UC Davis Winter 2022 Homework/STA 207/Project Proposal/index_2021_pour_import_-_index_2020_-_pour_import_1_1_-_index_2020_-_pour_import_1_1.csv", header = T, fill = T, sep = ",") #manually translated/formatted, now working
+
+who.covid <- read.csv("https://covid19.who.int/WHO-COVID-19-global-data.csv")
+
+urban.pop <- read.csv("C:/Users/kevin/Documents/UC Davis Winter 2022 Homework/STA 207/Project Proposal/CIA World Factbook Urban pop.csv") #changed from UN Data since UN data was poorly structured, had to manually assemble this dataset
+
+#Also important for covariates is the proportion of people living in an urban environment, constructed from the 2022 CIA World Factbook. This is relevant as more densely populated areas could provide more opportunity for disease spread. Removed though due to violation of ANCOVA assumption of uncorrelatedness with main effects.
+
+total.pop <- read.csv("C:/Users/kevin/Documents/UC Davis Winter 2022 Homework/STA 207/Project Draft/World Populations 2020.csv", header = T) 
+#Total Population Data from World Bank, manually formatted in Excel to make country names consistent https://data.worldbank.org/indicator/SP.POP.TOTL
+
+deaths.covid <-  who.covid %>% group_by(Country) %>% summarize(Cumulative_deaths = max(Cumulative_deaths)) #retrieve cumulative deaths
+
+colnames(total.pop) <- c("Country", "Population")
+deaths.covid <- as.data.frame(deaths.covid)
+
+#Adjust names of countries for consistency in WHO data
+
+
+deaths.covid[deaths.covid$Country=="Bolivia (Plurinational State of)", 1] = "Bolivia"
+deaths.covid[deaths.covid$Country=="Brunei Darussalam", 1] = "Brunei"
+deaths.covid[deaths.covid$Country=="CÃ´te dâ€™Ivoire", 1] = "Ivory Coast"
+deaths.covid[deaths.covid$Country=="CuraÃ§ao", 1] = "Curacao"
+deaths.covid[deaths.covid$Country=="Democratic People's Republic of Korea", 1] = "Democratic Peoples Republic of Korea"
+deaths.covid[deaths.covid$Country=="Democratic Republic of the Congo", 1] = "DR Congo"
+deaths.covid[deaths.covid$Country=="Falkland Islands (Malvinas)", 1] = "Falkland Islands"
+deaths.covid[deaths.covid$Country=="Iran (Islamic Republic of)", 1] = "Iran"
+deaths.covid[deaths.covid$Country=="Lao People's Democratic Republic", 1] = "Laos"
+deaths.covid[deaths.covid$Country=="Micronesia (Federated States of)", 1] = "Federated States of Micronesia"
+deaths.covid[deaths.covid$Country=="Northern Mariana Islands (Commonwealth of the)", 1] = "Northern Mariana Islands"
+deaths.covid[deaths.covid$Country=="occupied Palestinian territory, including east Jerusalem", 1] = "Palestine"
+deaths.covid[deaths.covid$Country=="RÃ©union", 1] = "Reunion"
+deaths.covid[deaths.covid$Country=="Republic of Korea", 1] = "South Korea"
+deaths.covid[deaths.covid$Country=="Republic of Moldova", 1] = "Moldova"
+deaths.covid[deaths.covid$Country=="Saint BarthÃ©lemy", 1] = "Saint Bartholomew"
+deaths.covid[deaths.covid$Country=="The United Kingdom", 1] = "United Kingdom"
+deaths.covid[deaths.covid$Country=="United States of America", 1] = "United States"
+deaths.covid[deaths.covid$Country=="United Republic of Tanzania", 1] = "Tanzania"
+deaths.covid[deaths.covid$Country=="Viet Nam", 1] = "Vietnam"
+deaths.covid[deaths.covid$Country=="Venezuela (Bolivarian Republic of)", 1] = "Venezuela"
+deaths.covid[deaths.covid$Country=="Kosovo[1]", 1] = "Kosovo"
+
+#Join data into one file
+
+collate <- full_join(deaths.covid, total.pop, by = "Country")
+collate <- full_join(collate, UNHDI, by = "Country")
+collate <- full_join(collate, urban.pop, by = "Country")
+collate <- full_join(collate, WPF.index, by = "Country")
+
+collate$deaths.per1000 <- (collate$Cumulative_deaths + 0.0001) *1000/collate$Population #0.0001 added to death count to permit box-cox transformation later without meaningfully affecting data
+collate$HDI_Category <- ifelse(collate$X2018.HDI.Value >= .8, "Very High", ifelse(collate$X2018.HDI.Value>=.7, "High", ifelse(collate$X2018.HDI.Value>=.55, "Medium", "Low")))
+#collate$HDI_Category <- factor(collate$HDI_Category, order = TRUE, levels = c("Low", "Medium", "High", "Very High")) Results same, but display is less interpretable
+
+collate$WPF_Category <- ifelse(collate$Score.2020 <= 15, "Good", ifelse(collate$Score.2020 <= 25, "Satisfactory", ifelse(collate$Score.2020 <= 35, "Problematic", ifelse(collate$Score.2020 <= 55, "Difficult", "Very Serious"))))
+#collate$WPF_Category <- factor(collate$WPF_Category, order = T, levels = c("Very Serious", "Difficult", "Problematic", "Satisfactory", "Good")) Results same, but display is less intepretable
+
+collate <- collate[complete.cases(collate),]
+
+#Exploratory Data Analysis
+
+summary(collate$deaths.per1000)
+hist(collate$deaths.per1000, main = "Frequency of COVID-19 deaths per 1000 people by number of countries", xlab = "COVID-19 deaths (per 1000)")
+
+
+fit <- aov(collate$deaths.per1000~collate$WPF_Category + collate$HDI_Category + collate$WPF_Category*collate$HDI_Category)
+bc.deaths <- boxcox(fit)
+lambda <- bc.deaths$x[which.max(bc.deaths$y)]
+
+ggplot(collate, aes(x = WPF_Category)) + geom_bar() + scale_x_discrete(labels = c("Very Serious (55+)", "Difficult (35-55)", "Problematic (25-35)", "Satisfactory (15-25)", "Good (15-)"), limits = c("Very Serious", "Difficult", "Problematic", "Satisfactory", "Good")) + labs(title = "# of Countries within each World Press Freedom Indicator Bracket") + ylab("Number of Countries") + xlab("World Press Freedom Bracket")
+
+ggplot(collate, aes(x = HDI_Category)) + geom_bar() + scale_x_discrete(labels = c("Low (<.55)", "Medium (.55-.7)", "High (.7-.8)", "Very High (.8-1)"), limits = c("Low", "Medium", "High", "Very High")) + labs(title = "# of Countries within each Human Development Index Bracket") + ylab("Number of Countries") + xlab("Human Development Index")
+
+ggplot(collate, aes(x = X2018.HDI.Value, y = Score.2020, col = deaths.per1000)) + geom_point() + scale_colour_gradient(low = "#AFE3FF",  high = "#030102", name = "COVID-19 Deaths (per 1000)") + scale_y_reverse() + ggtitle("HDI vs. World Press Freedom Index") + xlab("Human Development Index 2018") + ylab("WPF Index 2020 (Inverted scale)") 
+
+
+collate$deaths.per1000 <- ((collate$deaths.per1000^lambda)-1)/lambda #implement box-cox transformation from earlier
+
+summary(aov(collate$Urban~collate$HDI_Category+collate$WPF_Category)) #verify removal of variable
+
+#Model
+
+model.full <- lm(collate$deaths.per1000~collate$HDI_Category + collate$WPF_Category + collate$HDI_Category*collate$WPF_Category)
+model.reduced <- lm(collate$deaths.per1000~collate$HDI_Category)
+
+anova(model.reduced, model.full)
+
+summary(model.full)
+#qf(1-.05, 14, 152)
+
+#Model Diagnostics
+
+par(mfrow = c(2,2))
+plot(model.full)
+
+shapiro.test(model.full$residuals)
+```
+
+
+
+# Other sources for data
+
+UN Human Development Index retrieved from: http://data.un.org/DocumentData.aspx?id=423
+Note that 2018 UNHDI was used due to numerous incomplete figures for more recent HDI measures or inequality-adjusted HDI.
+
+Proportion of Urban Population from CIA World Factbook, hand copied to csv, original data from https://www.cia.gov/the-world-factbook/field/urbanization/
+
+Total Population Data from World Bank, manually formatted in Excel to make country names consistent, as some foreign characters failed to render properly in R, originally retrieved from https://data.worldbank.org/indicator/SP.POP.TOTL
+
+World Press Freedom Index assembled by Reporters sans Frontiers (RSF), indices retrieved from https://rsf.org/en/ranking_table
+
+WHO data on cumulative cases retrieved from "https://covid19.who.int/WHO-COVID-19-global-data.csv"
